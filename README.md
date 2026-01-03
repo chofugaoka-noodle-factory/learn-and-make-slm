@@ -23,7 +23,7 @@ uv sync
 configファイルについては、[config](config)ディレクトリを参照。
 
 ```bash
-uv run train.py <config_file>
+uv run pre_train.py <config_file>
 ```
 
 各モジュールはPyTestを使い、PyTorch標準のモジュールなどと出力が一致するか簡易的にテストを行っている。
@@ -31,7 +31,7 @@ uv run train.py <config_file>
 ### 推論
 
 PyTorch版とONNX版の2種類のスクリプトを用意している。
-基本的にはONNXの方が高速かつ軽量である。
+ONNX版はONNX Runtimeで実行する。
 
 PyTorch版でも、ONNX版でも、それぞれ別の方法でKVキャッシュを活用でき、
 KVキャッシュを有効化することで大幅に推論速度が向上する。
@@ -52,13 +52,19 @@ uv run infer_torch.py <config_file> --prompt "Hello," --enable-cache
 
 #### ONNX (モデルのエクスポートから推論まで)
 
+ExportはPyTorchのDynamo経由で行い、CPU向けのopset 23では専用のAttentionとRoPE演算を使用する。
+CUDA向けのopset 18ではこれらを自前のテンソル演算に分解する。
+KVキャッシュは長さ0から開始し、各層をまとめたK/Vテンソルを次の呼び出しへ渡す。
+
 ```bash
 # モデルをONNX形式でエクスポート (外挿KVキャッシュ有効化)
-uv run onnx_export.py <config_file> <checkpoint_path> <onnx_model_path> --enable-kv-cache
+uv run onnx_export.py <config_file> --checkpoint <checkpoint_path> --output <onnx_model_path> --enable-kv-cache
+# CUDA EPを利用したい場合はdeviceを指定(opset 18でexportされる)
+uv run onnx_export.py <config_file> --checkpoint <checkpoint_path> --output <onnx_oldop_model_path> --enable-kv-cache --device cuda
 # インタラクティブモードで起動
 uv run infer_onnx.py <config_file> <onnx_model_path>
-# CUDAを利用したい場合はdeviceを指定
-uv run infer_onnx.py <config_file> <onnx_model_path> --device cuda
+# CUDA EPを利用したい場合はoldopset modelとdeviceを指定
+uv run infer_onnx.py <config_file> <onnx_oldop_model_path> --device cuda
 # temperature及びtop-kを指定して推論(temp=1.0, top-k=10)
 uv run infer_onnx.py <config_file> <onnx_model_path> --temperature 1.0 --top-k 10
 # プロンプトを指定して推論(インタラクティブモードではない)
