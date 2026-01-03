@@ -262,7 +262,7 @@ def interactive_mode(
             print("--- End ---")
             print(f"Time: {generation_time:.2f} seconds")
             print(f"Token num: {token_num}")
-            print(f"Time per token: {generation_time / token_num:.2f} seconds")
+            print(f"Token per time: {token_num / generation_time:.2f} tok/s")
 
         except KeyboardInterrupt:
             print("\n\n終了します。")
@@ -358,7 +358,7 @@ def main():
             print("--- End ---")
             print(f"Time: {generation_time:.2f} seconds")
             print(f"Token num: {token_num}")
-            print(f"Time per token: {generation_time / token_num:.2f} seconds")
+            print(f"Token per time: {token_num / generation_time:.2f} tok/s")
         else:
             # インタラクティブモード
             interactive_mode(model, tokenizer, args.max_tokens, None, args.temperature, args.top_k, use_onnx=True)
@@ -403,7 +403,7 @@ def main():
             print("--- End ---")
             print(f"Time: {generation_time:.2f} seconds")
             print(f"Token num: {token_num}")
-            print(f"Time per token: {generation_time / token_num:.2f} seconds")
+            print(f"Token per time: {token_num / generation_time:.2f} tok/s")
         else:
             # インタラクティブモード
             interactive_mode(model, tokenizer, args.max_tokens, device, args.temperature, args.top_k)
