@@ -117,10 +117,12 @@ class DecoderBase(nn.Module):
                     if next_token_indices is not None:
                         next_token = torch.gather(next_token_indices, dim=-1, index=next_token)
 
-                x = torch.cat([x, next_token], dim=-1)
-                count += 1
                 if next_token[0, 0] == self.end_token_id:
                     break
+
+                x = torch.cat([x, next_token], dim=-1)
+                count += 1
+
                 if tokenizer is not None:
                     next_token = tokenizer.decode_tokens_bytes([next_token.item()])
                     for byte in next_token:

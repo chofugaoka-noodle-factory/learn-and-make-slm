@@ -132,7 +132,7 @@ def interactive_mode(
                 top_k=top_k,
                 show_streaming=True,
             )
-            print("--- End ---")
+            print("\n--- End ---")
             print(f"Time: {generation_time:.2f} seconds")
             print(f"Token num: {token_num}")
             if generation_time > 0:
