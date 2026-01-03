@@ -84,8 +84,8 @@ def export_model(model: DecoderBase, output_path: Path, opset_version: int = 23,
     device = next(model.parameters()).device
     input_ids = torch.randint(0, model.n_vocab, (2, 10), device=device)
     inputs = (input_ids,)
-    input_names = ["input_ids"] if enable_kv_cache else ["input"]
-    output_names = ["logits"] if enable_kv_cache else ["output"]
+    input_names = ["input_ids"]
+    output_names = ["logits"]
     batch = torch.export.Dim.AUTO
     sequence = torch.export.Dim.AUTO
     dynamic_shapes = ({0: batch, 1: sequence},)
