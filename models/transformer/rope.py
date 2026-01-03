@@ -55,7 +55,16 @@ class RotaryPositionalEmbeddingFunction(torch.autograd.Function):
         heads: int,
         embedding_dim: int,
     ) -> Float[Tensor, "..."]:
-        return g.op("RotaryEmbedding", x, cos_cache, sin_cache, position_ids, interleaved_i=1, num_heads_i=heads, rotary_embedding_dim_i=embedding_dim)
+        return g.op(
+            "RotaryEmbedding",
+            x,
+            cos_cache,
+            sin_cache,
+            position_ids,
+            interleaved_i=1,
+            num_heads_i=heads,
+            rotary_embedding_dim_i=embedding_dim,
+        )
 
 
 class RotaryPositionalEmbedding(nn.Module):
@@ -274,7 +283,9 @@ class RotaryPositionalEmbedding(nn.Module):
             )
             result = RotaryPositionalEmbeddingFunction.apply(x, cos, sin, position_ids, x.size(1).item(), self.dim)
         else:
-            result = RotaryPositionalEmbeddingFunction.forward(None, x, self.cos, self.sin, position_ids, x.size(1), self.dim)
+            result = RotaryPositionalEmbeddingFunction.forward(
+                None, x, self.cos, self.sin, position_ids, x.size(1), self.dim
+            )
 
         # Remove batch dimension if input was 2D
         if input_ndim == 2:

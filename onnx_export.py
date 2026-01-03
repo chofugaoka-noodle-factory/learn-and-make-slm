@@ -53,7 +53,8 @@ def load_model(
 def main():
     parser = ArgumentParser()
     parser.add_argument("config", type=Path, default="config/simple_stories.yaml")
-    # parser.add_argument("--no-amp", action="store_true", help="Disable AMP (mixed precision) for debugging")
+    parser.add_argument("--output", type=str, required=True, help="Output ONNX model path")
+    parser.add_argument("--enable-kv-cache", action="store_true", help="Enable KV cache for ONNX export")
     args = parser.parse_args()
 
     device = "cpu"
@@ -70,22 +71,71 @@ def main():
 
     model, tokenizer = load_model(config, checkpoint_path, device)
 
-    torch.onnx.export(
-        model,
-        (torch.randint(0, tokenizer.n_vocab, (1, 10)),),  # 入力テンソル
-        "model.onnx",
-        input_names=["input"],
-        output_names=["output"],
-        dynamic_axes={
-            # batch_sizeとsequence_lengthを動的に指定する、これにより任意のサイズの入力に対応できる
-            "input": {0: "batch_size", 1: "sequence_length"},
-            "output": {0: "batch_size", 1: "sequence_length"},
-        },
-        opset_version=23,  # ONNXのバージョン、Attentionが有効なバージョンを指定
-        dynamo=False,  # dynamoを使うとsymbolicを無視して演算が分解されるので、最適化が意味をなさなくなる
-        optimize=False,  # 最適化を無効化する(dynamo=Falseなので意味はない)
-        external_data=False,  # 重みを同じモデルに統合する
-    )
+    if args.enable_kv_cache:
+        # KV Cacheをサポートしたモデルのラッパーを作成
+        print("Exporting model with KV cache support...")
+
+        # ダミー入力を作成（pre-fill用）
+        dummy_input = torch.randint(0, tokenizer.n_vocab, (1, 10))
+
+        n_layers = len(model.layers)
+        print(f"Model has {n_layers} layers")
+
+        # 出力名とdynamic_axesを設定
+        input_names = ["input_ids", "past_keys", "past_values"]
+        output_names = ["logits", "present_keys", "present_values"]
+        dynamic_axes = {
+            "input_ids": {0: "batch_size", 1: "sequence_length"},
+            "logits": {0: "batch_size", 1: "sequence_length", 2: "vocab_size"},
+            # past_keys/values: (n_layers, batch_size, n_heads or n_groups, past_seq_len, d_k)
+            "past_keys": {1: "batch_size", 3: "past_sequence_length"},
+            "past_values": {1: "batch_size", 3: "past_sequence_length"},
+            # present_keys/values: (n_layers, batch_size, n_heads or n_groups, total_seq_len, d_k)
+            "present_keys": {1: "batch_size", 3: "total_sequence_length"},
+            "present_values": {1: "batch_size", 3: "total_sequence_length"},
+        }
+
+        print(f"Input names: {input_names}")
+        print(f"Output names: {output_names}")
+
+        # ダミーのKVキャッシュを作成
+        dummy_past_keys = torch.zeros((n_layers, 1, 4, 10, 64))
+        dummy_past_values = torch.zeros((n_layers, 1, 4, 10, 64))
+
+        torch.onnx.export(
+            model,
+            (dummy_input, dummy_past_keys, dummy_past_values),
+            args.output,
+            input_names=input_names,
+            output_names=output_names,
+            dynamic_axes=dynamic_axes,
+            opset_version=23,
+            dynamo=False,
+            optimize=False,
+            external_data=False,
+        )
+    else:
+        # 通常のエクスポート（KV cacheなし）
+        print("Exporting model without KV cache...")
+
+        torch.onnx.export(
+            model,
+            (torch.randint(0, tokenizer.n_vocab, (1, 10)),),  # 入力テンソル
+            args.output,
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_axes={
+                # batch_sizeとsequence_lengthを動的に指定する、これにより任意のサイズの入力に対応できる
+                "input": {0: "batch_size", 1: "sequence_length"},
+                "output": {0: "batch_size", 1: "sequence_length"},
+            },
+            opset_version=23,  # ONNXのバージョン、Attentionが有効なバージョンを指定
+            dynamo=False,  # dynamoを使うとsymbolicを無視して演算が分解されるので、最適化が意味をなさなくなる
+            optimize=False,  # 最適化を無効化する(dynamo=Falseなので意味はない)
+            external_data=False,  # 重みを同じモデルに統合する
+        )
+
+    print(f"ONNX model exported to {args.output}")
 
 
 if __name__ == "__main__":

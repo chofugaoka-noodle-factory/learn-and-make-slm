@@ -24,37 +24,82 @@ except Exception:
 _INTERNAL_INITIAL_CACHE_INDEX: Final = -1
 
 
+def expand_grouped_kv(
+    K: Float[Tensor, "B H_G S_k D"], V: Float[Tensor, "B H_G S_k D"], n_groups: int
+) -> tuple[Float[Tensor, "B H S_k D"], Float[Tensor, "B H S_k D"]]:
+    batch_size, n_heads, seq_len, d_k = K.size()
+    K: Float[Tensor, "B H_G 1 S_k D"] = K.unsqueeze(2)
+    K: Float[Tensor, "B H_G G S_k D"] = K.expand(-1, -1, n_groups, -1, -1)
+    K: Float[Tensor, "B H S_k D"] = K.reshape(batch_size, n_heads * n_groups, seq_len, d_k)
+
+    V: Float[Tensor, "B H_G 1 S_k D"] = V.unsqueeze(2)
+    V: Float[Tensor, "B H_G G S_k D"] = V.expand(-1, -1, n_groups, -1, -1)
+    V: Float[Tensor, "B H S_k D"] = V.reshape(batch_size, n_heads * n_groups, seq_len, d_k)
+    return K, V
+
+
 class ScaledDotProductAttentionFunction(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
         Q: Float[Tensor, "B H S_q D"],
-        K: Float[Tensor, "B H_G S_k D"],
-        V: Float[Tensor, "B H_G S_k D"],
+        K: Float[Tensor, "B H_G1 S_k D"],
+        V: Float[Tensor, "B H_G1 S_k D"],
         kv_num_heads: int,
         q_num_heads: int,
         scale: float,
+        past_key: Float[Tensor, "B H_G2 S_past D"] | None = None,
+        past_value: Float[Tensor, "B H_G2 S_past D"] | None = None,
         seq_lens: Int[Tensor, "B"] | None = None,  # noqa: F821
-    ):
-        batch_size, _, seq_len, d_k = Q.size()
+    ) -> tuple[
+        Float[Tensor, "B H S_q D"],
+        Float[Tensor, "B H_G2 S_present D_k"] | None,
+        Float[Tensor, "B H_G2 S_present D_k"] | None,
+    ]:
+        # 外部キャッシュを使用するかどうかを自動判定
+        use_external_cache = past_key is not None and past_value is not None
+
+        present_key: Float[Tensor, "B H_G2 S_present D"] | None
+        present_value: Float[Tensor, "B H_G2 S_present D"] | None
+        # KVキャッシュの結合
+        if use_external_cache:
+            n_groups = q_num_heads // past_key.size(-3)
+            if torch.onnx.is_in_onnx_export():
+                # ONNXエクスポート時：past_keyは展開しない、Kもまだ展開されていない
+                # 両方とも (B, H_G, S, D) の形状なのでそのままcat
+                K = torch.cat([past_key, K], dim=-2)
+                V = torch.cat([past_value, V], dim=-2)
+                # present_keyはグループ形状のまま
+                present_key = K
+                present_value = V
+            else:
+                # 通常時：past_keyを展開してからcat
+                past_key, past_value = expand_grouped_kv(past_key, past_value, n_groups)
+                K = torch.cat([past_key, K], dim=-2)
+                V = torch.cat([past_value, V], dim=-2)
+                # 展開された形状からグループ形状に戻す
+                present_key = K[:, ::n_groups]
+                present_value = V[:, ::n_groups]
+        else:
+            # ONNXエクスポート時はNoneを返せないので、ダミーテンソルを返す
+            if torch.onnx.is_in_onnx_export():
+                # 空のテンソルを返す（シーケンス長0）
+                present_key = torch.empty(K.size(0), kv_num_heads, 0, K.size(-1), dtype=K.dtype, device=K.device)
+                present_value = torch.empty(V.size(0), kv_num_heads, 0, V.size(-1), dtype=V.dtype, device=V.device)
+            else:
+                present_key = None
+                present_value = None
+
         # ONNX export時はGrouped Query Attentionのために手動でexpandする
         if torch.onnx.is_in_onnx_export():
-            n_groups = q_num_heads // kv_num_heads
-
-            K: Float[Tensor, "B H_G 1 S_k D"] = K.unsqueeze(2)
-            K: Float[Tensor, "B H_G G S_k D"] = K.expand(-1, -1, n_groups, -1, -1)
-            K: Float[Tensor, "B H S_k D"] = K.reshape(batch_size, q_num_heads, seq_len, d_k)
-
-            V: Float[Tensor, "B H_G 1 S_k D"] = V.unsqueeze(2)
-            V: Float[Tensor, "B H_G G S_k D"] = V.expand(-1, -1, n_groups, -1, -1)
-            V: Float[Tensor, "B H S_k D"] = V.reshape(batch_size, q_num_heads, seq_len, d_k)
+            K, V = expand_grouped_kv(K, V, q_num_heads // kv_num_heads)
 
         scores: Float[Tensor, "B H S_q S_k"] = (Q @ K.transpose(-2, -1)) * scale
 
         # make causal mask with diagonal
         s_q = scores.size(-2)
         s_k = scores.size(-1)
-        start = max(0, s_k - s_q)
+        start = s_k - s_q
         causal_mask: Bool[Tensor, "S_q S_k"] = torch.tril(
             torch.ones((s_q, s_k), device=scores.device, dtype=torch.bool),
             diagonal=start,
@@ -71,24 +116,49 @@ class ScaledDotProductAttentionFunction(torch.autograd.Function):
             scores = scores.masked_fill(mask, float("-inf"))
         attn_weights = SoftmaxFunction.forward(None, scores)
         output = attn_weights @ V
-        return output
+        return output, present_key, present_value
 
     @staticmethod
     def symbolic(
         g,
         Q: Float[Tensor, "B H S_q D"],
-        K: Float[Tensor, "B H_G S_k D"],
-        V: Float[Tensor, "B H_G S_k D"],
+        K: Float[Tensor, "B H_G1 S_k D"],
+        V: Float[Tensor, "B H_G1 S_k D"],
         kv_num_heads: int,
         q_num_heads: int,
         scale: float,
+        past_key: Float[Tensor, "B H_G2 S_past D"],
+        past_value: Float[Tensor, "B H_G2 S_past D"],
         seq_lens: Int[Tensor, "B"] | None = None,  # noqa: F821
     ):
-        # past_key: torch.Tensor | None = None,
-        # past_value: torch.Tensor | None = None,
-        return g.op(
-            "Attention", Q, K, V, is_causal_i=1, kv_num_heads_i=kv_num_heads, q_num_heads_i=q_num_heads, scale_f=scale
-        )
+        # past_keyとpast_valueは位置引数として渡す（ONNXエクスポート時は常に非None）
+        if past_key is not None and past_value is not None:
+            output, present_key, present_value = g.op(
+                "Attention",
+                Q,
+                K,
+                V,
+                past_key,
+                past_value,
+                is_causal_i=1,
+                kv_num_heads_i=kv_num_heads,
+                q_num_heads_i=q_num_heads,
+                scale_f=scale,
+                outputs=3,
+            )
+        else:
+            output = g.op(
+                "Attention",
+                Q,
+                K,
+                V,
+                is_causal_i=1,
+                kv_num_heads_i=kv_num_heads,
+                q_num_heads_i=q_num_heads,
+                scale_f=scale,
+            )
+            present_key, present_value = None, None
+        return output, present_key, present_value
 
 
 class ScaledDotProductAttention(nn.Module):
@@ -103,7 +173,11 @@ class ScaledDotProductAttention(nn.Module):
         K: Float[Tensor, "B H S_k D"],
         V: Float[Tensor, "B H S_k D"],
         seq_lens: Int[Tensor, "B"] | None = None,  # noqa: F821
-    ) -> Float[Tensor, "B H S_q D"]:
+        past_key: Float[Tensor, "B H_G S_past D"] | None = None,
+        past_value: Float[Tensor, "B H_G S_past D"] | None = None,
+    ) -> tuple[
+        Float[Tensor, "B H S_q D"], Float[Tensor, "B H_G S_present D"] | None, Float[Tensor, "B H_G S_present D"] | None
+    ]:
         """
         xformersの`memory_efficient_attention`を用いてSDPAを計算する。
         おそらく内部でFlash Attention 2を実行していると思われる。
@@ -118,9 +192,22 @@ class ScaledDotProductAttention(nn.Module):
 
         B, *_ = Q.shape
 
-        Q: Float[Tensor, "B S H D={self.d_k}"] = Q.transpose(1, 2)
-        K: Float[Tensor, "B S H D={self.d_k}"] = K.transpose(1, 2)
-        V: Float[Tensor, "B S H D={self.d_k}"] = V.transpose(1, 2)
+        use_external_cache = past_key is not None and past_value is not None
+
+        present_key: Float[Tensor, "B H_G (S_past + S_k) D"] | None = None
+        present_value: Float[Tensor, "B H_G (S_past + S_k) D"] | None = None
+
+        if use_external_cache:
+            past_key, past_value = expand_grouped_kv(past_key, past_value, Q.size(-3) // K.size(-3))
+
+            present_key = torch.cat([past_key, K], dim=-2)
+            present_value = torch.cat([past_value, V], dim=-2)
+            K = present_key
+            V = present_value
+
+        Q: Float[Tensor, "B S_q H D={self.d_k}"] = Q.transpose(1, 2)
+        K: Float[Tensor, "B S_k H D={self.d_k}"] = K.transpose(1, 2)
+        V: Float[Tensor, "B S_k H D={self.d_k}"] = V.transpose(1, 2)
 
         # Bは1になる、Sは要素ごとに異なる
         Q_list: list[Float[Tensor, "1 S_i H D={self.d_k}"]]
@@ -181,27 +268,46 @@ class ScaledDotProductAttention(nn.Module):
             else:
                 padded_out[i] = out_elem
         padded_out: Float[Tensor, "B H S D={self.d_k}"] = padded_out.transpose(1, 2)
-        return padded_out
+        return padded_out, present_key, present_value
 
     def forward(
         self,
         Q: Float[Tensor, "B H S_q D={self.d_k}"],
-        K: Float[Tensor, "B H_G S_k D"],
-        V: Float[Tensor, "B H_G S_k D"],
+        K: Float[Tensor, "B H_G1 S_k D"],
+        V: Float[Tensor, "B H_G1 S_k D"],
+        past_key: Float[Tensor, "B H_G2 S_past D"] | None = None,
+        past_value: Float[Tensor, "B H_G2 S_past D"] | None = None,
         seq_lens: Int[Tensor, "B"] | None = None,  # noqa: F821
-    ) -> Float[Tensor, "B H S_q D={self.d_k}"]:
+    ) -> tuple[
+        Float[Tensor, "B H S_q D={self.d_k}"],
+        Float[Tensor, "B H_G2 S_present D"] | None,
+        Float[Tensor, "B H_G2 S_present D"] | None,
+    ]:
         if torch.onnx.is_in_onnx_export():
-            return ScaledDotProductAttentionFunction.apply(
-                Q, K, V, int(K.size(-3)), int(Q.size(-3)), self.scale.item(), seq_lens
+            output, present_key, present_value = ScaledDotProductAttentionFunction.apply(
+                Q, K, V, int(K.size(-3)), int(Q.size(-3)), self.scale.item(), past_key, past_value, seq_lens
             )
+            return output, present_key, present_value
+
         try:
-            return self.xformers_forward(Q, K, V, seq_lens)
+            output, present_key, present_value = self.xformers_forward(Q, K, V, seq_lens, past_key, past_value)
         except Exception:
             warnings.warn("xFormers is not available, falling back to reference implementation")
             # 使えない状況（未対応のmaskやCPU/未実装カーネル等）は自前実装にフォールバック
-            return ScaledDotProductAttentionFunction.forward(
-                None, Q, K, V, kv_num_heads=int(K.size(-3)), q_num_heads=int(Q.size(-3)), scale=self.scale.item(), seq_lens=seq_lens
+            output, present_key, present_value = ScaledDotProductAttentionFunction.forward(
+                None,
+                Q,
+                K,
+                V,
+                kv_num_heads=int(K.size(-3)),
+                q_num_heads=int(Q.size(-3)),
+                scale=self.scale.item(),
+                past_key=past_key,
+                past_value=past_value,
+                seq_lens=seq_lens,
             )
+
+        return output, present_key, present_value
 
 
 class MultiHeadAttention(nn.Module):
@@ -243,10 +349,27 @@ class MultiHeadAttention(nn.Module):
     def forward(
         self,
         x: Float[Tensor, "B S D={self.d_model}"],
+        past_key: Float[Tensor, "B H S_past D_k"] | None = None,
+        past_value: Float[Tensor, "B H S_past D_k"] | None = None,
         seq_lens: Int[Tensor, "B"] | None = None,  # noqa: F821
-    ) -> Float[Tensor, "B S D"]:
+    ) -> tuple[Float[Tensor, "B S D"], Float[Tensor, "B H S_present D_k"] | None, Float[Tensor, "B H S_present D_k"] | None]:
+        """
+        Args:
+            x: 入力テンソル (batch_size, seq_len, d_model)
+            seq_lens: シーケンス長 (batch_size,)
+            past_key: 過去のKeyキャッシュ (batch_size, n_heads, past_seq_len, d_k)
+            past_value: 過去のValueキャッシュ (batch_size, n_heads, past_seq_len, d_k)
+
+        Returns:
+            output: 出力テンソル (batch_size, seq_len, d_model)
+            present_key: 現在のKeyキャッシュ (batch_size, n_heads, total_seq_len, d_k) または None
+            present_value: 現在のValueキャッシュ (batch_size, n_heads, total_seq_len, d_k) または None
+        """
         # x: (batch_size, seq_len, d_model)
         batch_size, seq_len, _ = x.size()
+
+        # 外部キャッシュを使用するかどうかを自動判定
+        use_external_cache = past_key is not None and past_value is not None
 
         # When using cache, we can only process one token at a time.
         use_cache = self._active_internal_cache is not None and self._active_internal_cache != _INTERNAL_INITIAL_CACHE_INDEX
@@ -270,11 +393,17 @@ class MultiHeadAttention(nn.Module):
             if use_cache:
                 # when cached, we need to indicate current K/Q position with positional_offset
                 positional_offset = self._current_seq_len
+            elif use_external_cache:
+                # 外部キャッシュを使う場合、past_keyのシーケンス長をオフセットにする
+                positional_offset = past_key.size(-2)
 
             Q = self.rope(Q, positional_offset)
             K = self.rope(K, positional_offset)
 
         attention: Tensor
+        present_key: Float[Tensor, "B H S_present D_k"] | None
+        present_value: Float[Tensor, "B H S_present D_k"] | None
+
         if self._active_internal_cache is not None:
             # cached
             if self._active_internal_cache == _INTERNAL_INITIAL_CACHE_INDEX:
@@ -288,10 +417,10 @@ class MultiHeadAttention(nn.Module):
                 K, V = self._kv_cache.update(self._active_internal_cache, K, V)
                 self._current_seq_len += seq_len
 
-            attention = self.attention(Q, K, V, seq_lens=None)
+            attention, present_key, present_value = self.attention(Q, K, V, seq_lens=None)
         else:
-            # non-cached
-            attention = self.attention(Q, K, V, seq_lens)
+            # non-cached（外部キャッシュを含む）
+            attention, present_key, present_value = self.attention(Q, K, V, past_key, past_value, seq_lens)
 
         attention = attention.transpose(1, 2)  # (batch_size, seq_len, n_heads, d_k)
         attention = attention.contiguous().view(batch_size, seq_len, self.d_model)  # (batch_size, seq_len, d_model)
@@ -307,7 +436,7 @@ class MultiHeadAttention(nn.Module):
                 f"with cache index {self._active_internal_cache}."
             )
 
-        return output
+        return output, present_key, present_value
 
 
 class GroupedQueryAttention(nn.Module):
@@ -351,9 +480,29 @@ class GroupedQueryAttention(nn.Module):
     def forward(
         self,
         x: Float[Tensor, "B S D={self.d_model}"],
+        past_key: Float[Tensor, "B H_G S_past D_k"] | None = None,
+        past_value: Float[Tensor, "B H_G S_past D_k"] | None = None,
         seq_lens: Int[Tensor, "B"] | None = None,  # noqa: F821
-    ) -> Float[Tensor, "B S D"]:
+    ) -> tuple[
+        Float[Tensor, "B S D"], Float[Tensor, "B H_G S_present D_k"] | None, Float[Tensor, "B H_G S_present D_k"] | None
+    ]:
+        """
+        Args:
+            x: 入力テンソル (batch_size, seq_len, d_model)
+            seq_lens: シーケンス長 (batch_size,)
+            past_key: 過去のKeyキャッシュ (batch_size, n_groups, past_seq_len, d_k)
+            past_value: 過去のValueキャッシュ (batch_size, n_groups, past_seq_len, d_k)
+
+        Returns:
+            output: 出力テンソル (batch_size, seq_len, d_model)
+            present_key: 現在のKeyキャッシュ (batch_size, n_groups, total_seq_len, d_k) または None
+            present_value: 現在のValueキャッシュ (batch_size, n_groups, total_seq_len, d_k) または None
+        """
         batch_size, seq_len, _ = x.size()
+
+        # 外部キャッシュを使用するかどうかを自動判定
+        use_external_cache = past_key is not None and past_value is not None
+
         # When using cache, we can only process one token at a time.
         use_cache = self._active_internal_cache is not None and self._active_internal_cache != _INTERNAL_INITIAL_CACHE_INDEX
         if use_cache:
@@ -376,28 +525,29 @@ class GroupedQueryAttention(nn.Module):
             .reshape(batch_size, seq_len, self.n_heads // self.n_groups, self.d_model // self.n_heads)
             .transpose(1, 2)
         )
-        # ONNX Export時はAttention Opが自動でExpandしてくれる
-        if not torch.onnx.is_in_onnx_export():
-            K: Float[Tensor, "B H_G 1 S D"] = K.unsqueeze(2)
-            K: Float[Tensor, "B H_G G S D"] = K.expand(-1, -1, self.n_groups, -1, -1)
-            K: Float[Tensor, "B H S D"] = K.reshape(batch_size, self.n_heads, seq_len, self.d_model // self.n_heads)
-
-            V: Float[Tensor, "B H_G 1 S D"] = V.unsqueeze(2)
-            V: Float[Tensor, "B H_G G S D"] = V.expand(-1, -1, self.n_groups, -1, -1)
-            V: Float[Tensor, "B H S D"] = V.reshape(batch_size, self.n_heads, seq_len, self.d_model // self.n_heads)
 
         if self.rope is not None:
             positional_offset: int = 0
             if use_cache:
                 # when cached, we need to indicate current K/Q position with positional_offset
                 positional_offset = self._current_seq_len
+            elif use_external_cache:
+                # 外部キャッシュを使う場合、past_keyのシーケンス長をオフセットにする
+                positional_offset = past_key.size(-2)
 
             Q = self.rope(Q, positional_offset)
             K = self.rope(K, positional_offset)
 
+        # ONNX Export時はAttention Opが自動でExpandしてくれる
+        if not torch.onnx.is_in_onnx_export():
+            K, V = expand_grouped_kv(K, V, self.n_groups)
+
         attention: Tensor
+        present_key: Float[Tensor, "B H_G S_present D_k"] | None
+        present_value: Float[Tensor, "B H_G S_present D_k"] | None
+
         if self._active_internal_cache is not None:
-            # cached
+            # cached（内部キャッシュ使用時）
             if self._active_internal_cache == _INTERNAL_INITIAL_CACHE_INDEX:
                 self._active_internal_cache = self._kv_cache.append(
                     cache_class=CacheEntry,
@@ -409,10 +559,10 @@ class GroupedQueryAttention(nn.Module):
                 K, V = self._kv_cache.update(self._active_internal_cache, K, V)
                 self._current_seq_len += seq_len
 
-            attention = self.attention(Q, K, V, seq_lens=None)
+            attention, present_key, present_value = self.attention(Q, K, V, seq_lens=None)
         else:
-            # non-cached
-            attention = self.attention(Q, K, V, seq_lens)
+            # non-cached（外部キャッシュを含む）
+            attention, present_key, present_value = self.attention(Q, K, V, past_key, past_value, seq_lens)
 
         attention = attention.transpose(1, 2)  # (batch_size, seq_len, n_heads, d_k)
         attention = attention.contiguous().reshape(batch_size, seq_len, self.d_model)  # (batch_size, seq_len, d_model)
@@ -428,4 +578,4 @@ class GroupedQueryAttention(nn.Module):
                 f"with cache index {self._active_internal_cache}."
             )
 
-        return output
+        return output, present_key, present_value

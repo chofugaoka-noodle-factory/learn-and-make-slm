@@ -23,17 +23,20 @@ class GPT2DecoderLayer(nn.Module):
     def forward(
         self,
         x: Float[Tensor, "B S D={self.d_model}"],
+        past_key: Float[Tensor, "B H S_past D_k"] | None = None,
+        past_value: Float[Tensor, "B H S_past D_k"] | None = None,
         seq_lens: Int[Tensor, "B"] | None = None,  # noqa: F821
-    ) -> Float[Tensor, "B S D"]:
+    ) -> tuple[Float[Tensor, "B S D"], Float[Tensor, "B H S_present D_k"] | None, Float[Tensor, "B H S_present D_k"] | None]:
         residual = x
         x = self.norm1(x)
-        x = residual + self.self_attn(x, seq_lens)
+        attn_output, present_key, present_value = self.self_attn(x, past_key, past_value, seq_lens)
+        x = residual + attn_output
 
         residual = x
         x = self.norm2(x)
         x = residual + self.ffn(x)
 
-        return x
+        return x, present_key, present_value
 
 
 class GPTOSSDecoderLayer(nn.Module):
@@ -66,12 +69,16 @@ class GPTOSSDecoderLayer(nn.Module):
     def forward(
         self,
         x: Float[Tensor, "B S D={self.d_model}"],
+        past_key: Float[Tensor, "B H_G S_past D_k"] | None = None,
+        past_value: Float[Tensor, "B H_G S_past D_k"] | None = None,
         seq_lens: Int[Tensor, "B"] | None = None,  # noqa: F821
-    ) -> Float[Tensor, "B S D"]:
+    ) -> tuple[
+        Float[Tensor, "B S D"], Float[Tensor, "B H_G S_present D_k"] | None, Float[Tensor, "B H_G S_present D_k"] | None
+    ]:
         # masked multi-head self-attention
         residual = x
         x = self.norm1(x)
-        attn_output: Float[Tensor, "B S D"] = self.self_attn(x, seq_lens)
+        attn_output, present_key, present_value = self.self_attn(x, past_key, past_value, seq_lens)
         x = residual + attn_output
 
         # feed-forward
@@ -80,4 +87,4 @@ class GPTOSSDecoderLayer(nn.Module):
         ffn_output: Float[Tensor, "B S D"] = self.ffn(x)
         x = residual + ffn_output
 
-        return x
+        return x, present_key, present_value

@@ -16,7 +16,7 @@ def test_gpt_2_decoder_shape():
     x = torch.randint(0, n_vocab, (batch_size, seq_len))
 
     decoder = GPT2Decoder(n_vocab=n_vocab, n_layers=n_layers, d_model=d_model, n_heads=n_heads, end_token_id=end_token_id)
-    output = decoder(x, seq_lens=torch.tensor([seq_len, seq_len]))
+    output, _, _ = decoder(x, seq_lens=torch.tensor([seq_len, seq_len]))
 
     assert output.shape == (batch_size, seq_len, n_vocab)
 
@@ -37,7 +37,7 @@ def test_gpt_oss_decoder_shape():
     decoder = GPTOSSDecoder(
         n_vocab=n_vocab, n_layers=n_layers, d_model=d_model, n_heads=n_heads, n_groups=n_groups, end_token_id=end_token_id
     )
-    output = decoder(x, seq_lens=torch.tensor([seq_len, seq_len]))
+    output, _, _ = decoder(x, seq_lens=torch.tensor([seq_len, seq_len]))
 
     assert output.shape == (batch_size, seq_len, n_vocab)
 
