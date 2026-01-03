@@ -125,12 +125,12 @@ def main():
             model,
             (torch.randint(0, tokenizer.n_vocab, (1, 10)).to(device),),  # 入力テンソル
             args.output,
-            input_names=["input"],
-            output_names=["output"],
+            input_names=["input_ids"],
+            output_names=["logits"],
             dynamic_axes={
                 # batch_sizeとsequence_lengthを動的に指定する、これにより任意のサイズの入力に対応できる
-                "input": {0: "batch_size", 1: "sequence_length"},
-                "output": {0: "batch_size", 1: "sequence_length"},
+                "input_ids": {0: "batch_size", 1: "sequence_length"},
+                "logits": {0: "batch_size", 1: "sequence_length"},
             },
             # CUDA EPはSqueezeのopset version 23に対応していないため、version 17まで下げる
             opset_version=23 if args.device != "cuda" else 17,
