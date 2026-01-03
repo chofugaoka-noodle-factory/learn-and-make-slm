@@ -30,16 +30,39 @@ uv run train.py <config_file>
 
 ### 推論
 
-任意のconfigファイルを指定して推論を行う。
-以下の例以外はhelpを参照。
+PyTorch版とONNX版の2種類のスクリプトを用意している。
+基本的にはONNXの方が高速かつ軽量である。
+
+PyTorch版でも、ONNX版でも、それぞれ別の方法でKVキャッシュを活用でき、
+KVキャッシュを有効化することで大幅に推論速度が向上する。
+
+使い方はどちらも同じで、任意のconfigファイルを指定して実行する。
+以下の例以外は`--help`でオプションを確認できる。
+
+#### PyTorch (チェックポイントを使用)
 
 ```bash
-# インタラクティブモードで起動
-uv run infer.py <config_file>
+# インタラクティブモードで、KVキャッシュを活用して起動
+uv run infer_torch.py <config_file> --enable-cache
 # temperature及びtop-kを指定して推論(temp=1.0, top-k=10)
-uv run infer.py <config_file> --temperature 1.0 --top-k 10
+uv run infer_torch.py <config_file> --temperature 1.0 --top-k 10 --enable-cache
 # プロンプトを指定して推論(インタラクティブモードではない)
-uv run infer.py <config_file> --prompt "Hello,"
+uv run infer_torch.py <config_file> --prompt "Hello," --enable-cache
+```
+
+#### ONNX (モデルのエクスポートから推論まで)
+
+```bash
+# モデルをONNX形式でエクスポート (外挿KVキャッシュ有効化)
+uv run onnx_export.py <config_file> <checkpoint_path> <onnx_model_path> --enable-kv-cache
+# インタラクティブモードで起動
+uv run infer_onnx.py <config_file> <onnx_model_path>
+# CUDAを利用したい場合はdeviceを指定
+uv run infer_onnx.py <config_file> <onnx_model_path> --device cuda
+# temperature及びtop-kを指定して推論(temp=1.0, top-k=10)
+uv run infer_onnx.py <config_file> <onnx_model_path> --temperature 1.0 --top-k 10
+# プロンプトを指定して推論(インタラクティブモードではない)
+uv run infer_onnx.py <config_file> <onnx_model_path> --prompt "Hello,"
 ```
 
 ## Tensor の型付け
