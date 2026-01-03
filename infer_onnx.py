@@ -257,7 +257,7 @@ def generate_onnx(
         inputs: dict[str, np.ndarray | torch.Tensor] = {}
 
         if use_cuda:
-            inputs["input_ids"] = torch.from_numpy(model_input, dtype=torch.long, device=torch_device).contiguous()
+            inputs["input_ids"] = torch.from_numpy(model_input).to(dtype=torch.long, device=torch_device).contiguous()
         else:
             inputs["input_ids"] = model_input
 
