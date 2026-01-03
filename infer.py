@@ -5,8 +5,11 @@
 from argparse import ArgumentParser
 from pathlib import Path
 
+import sys
 import time
 
+import numpy as np
+import onnxruntime as ort
 import tiktoken
 import torch
 
@@ -57,6 +60,109 @@ def load_model(
     return model, tokenizer
 
 
+def load_onnx_model(onnx_path: str, config: SLMConfig) -> tuple[ort.InferenceSession, tiktoken.Encoding]:
+    """ONNXモデルとトークナイザーをロードする"""
+    # トークナイザーの初期化
+    tokenizer = tiktoken.get_encoding(config.tokenizer)
+
+    # ONNXランタイムセッションの作成
+    sess_options = ort.SessionOptions()
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+    # 利用可能なプロバイダーを取得
+    providers = ["CPUExecutionProvider"]
+    if "CUDAExecutionProvider" in ort.get_available_providers():
+        providers.insert(0, "CUDAExecutionProvider")
+
+    session = ort.InferenceSession(onnx_path, sess_options=sess_options, providers=providers)
+
+    print(f"ONNX model loaded with providers: {session.get_providers()}")
+
+    return session, tokenizer
+
+
+def sample_token(logits: np.ndarray, temperature: float = 0.0, top_k: int | None = None) -> int:
+    """ロジットからトークンをサンプリングする"""
+    if temperature == 0.0:
+        # Greedy sampling
+        return int(np.argmax(logits))
+
+    # Temperature scaling
+    logits = logits / temperature
+
+    # Top-k filtering
+    if top_k is not None:
+        top_k_indices = np.argpartition(logits, -top_k)[-top_k:]
+        top_k_logits = logits[top_k_indices]
+        # Softmax
+        exp_logits = np.exp(top_k_logits - np.max(top_k_logits))
+        probs = exp_logits / np.sum(exp_logits)
+        # Sample
+        sampled_idx = np.random.choice(len(top_k_indices), p=probs)
+        return int(top_k_indices[sampled_idx])
+    else:
+        # Softmax
+        exp_logits = np.exp(logits - np.max(logits))
+        probs = exp_logits / np.sum(exp_logits)
+        # Sample
+        return int(np.random.choice(len(logits), p=probs))
+
+
+def generate_onnx(
+    session: ort.InferenceSession,
+    tokenizer: tiktoken.Encoding,
+    prompt: str,
+    max_tokens: int,
+    temperature: float = 0.0,
+    top_k: int | None = None,
+    show_streaming: bool = True,
+) -> tuple[str, int, float]:
+    """ONNXモデルを使用してプロンプトからテキストを生成する"""
+    # プロンプトをトークンIDに変換
+    input_ids = tokenizer.encode(prompt)
+    current_ids = np.array([input_ids], dtype=np.int64)
+    print(prompt)
+
+    start_time = time.time()
+
+    # 自己回帰的にトークンを生成
+    for _ in range(max_tokens):
+        # ONNXモデルで推論
+        outputs = session.run(None, {"input": current_ids})
+        logits = outputs[0]  # Shape: (batch_size, seq_len, vocab_size)
+
+        # 最後のトークンのロジットを取得
+        next_token_logits = logits[0, -1, :]
+
+        # 次のトークンをサンプリング
+        next_token = sample_token(next_token_logits, temperature, top_k)
+
+        # ストリーミング出力
+        if show_streaming:
+            decoded = tokenizer.decode_tokens_bytes([next_token])
+            for byte in decoded:
+                sys.stdout.buffer.write(byte)
+            sys.stdout.flush()
+
+        # 生成されたトークンを追加
+        current_ids = np.concatenate([current_ids, [[next_token]]], axis=1)
+
+        # EOTトークンで終了
+        if next_token == tokenizer.eot_token:
+            break
+
+    end_time = time.time()
+
+    if show_streaming:
+        print()  # 改行を追加
+
+    # 生成されたトークンIDをテキストに変換
+    output_text = tokenizer.decode(current_ids[0].tolist())
+    token_num = current_ids.shape[1] - len(input_ids)
+
+    return output_text, token_num, end_time - start_time
+
+
 def generate(
     model: GPT2Decoder,
     tokenizer: tiktoken.Encoding,
@@ -103,12 +209,13 @@ def generate(
 
 
 def interactive_mode(
-    model: GPT2Decoder,
+    model: GPT2Decoder | ort.InferenceSession,
     tokenizer: tiktoken.Encoding,
     max_tokens: int,
-    device: torch.device,
+    device: torch.device | None = None,
     temperature: float = 0.0,
     top_k: int | None = None,
+    use_onnx: bool = False,
 ):
     """インタラクティブモードでテキスト生成を行う"""
     print("\n=== Interactive Mode ===")
@@ -139,9 +246,14 @@ def interactive_mode(
                 continue
 
             print("\n--- Generated Text ---")
-            _, token_num, generation_time = generate(
-                model, tokenizer, prompt, max_tokens, device, temperature, top_k, show_streaming=True
-            )
+            if use_onnx:
+                _, token_num, generation_time = generate_onnx(
+                    model, tokenizer, prompt, max_tokens, temperature, top_k, show_streaming=True
+                )
+            else:
+                _, token_num, generation_time = generate(
+                    model, tokenizer, prompt, max_tokens, device, temperature, top_k, show_streaming=True
+                )
             print("--- End ---")
             print(f"Time: {generation_time:.2f} seconds")
             print(f"Token num: {token_num}")
@@ -163,6 +275,12 @@ def main():
         type=str,
         default=None,
         help="チェックポイントファイルのパス。指定しない場合は最新のチェックポイントを使用",
+    )
+    parser.add_argument(
+        "--onnx",
+        type=str,
+        default=None,
+        help="ONNXモデルのパス。指定した場合はONNXモデルで推論を行う",
     )
     parser.add_argument(
         "--prompt",
@@ -202,58 +320,88 @@ def main():
     parser.add_argument(
         "--enable-internal-cache",
         action="store_true",
-        help="KVキャッシュを有効にする",
+        help="KVキャッシュを有効にする（ONNXモードでは無効）",
     )
     args = parser.parse_args()
 
     # 設定の読み込み
     config = SLMConfig.load(args.config)
 
-    # デバイスの設定
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device(args.device)
-    print(f"Using device: {device}")
+    # ONNXモデルを使用する場合
+    if args.onnx is not None:
+        print(f"Loading ONNX model: {args.onnx}")
+        model, tokenizer = load_onnx_model(args.onnx, config)
+        device = None
 
-    # チェックポイントのパスを決定
-    if args.checkpoint is not None:
-        checkpoint_path = args.checkpoint
+        if args.enable_cache:
+            print("Warning: KVキャッシュはONNXモードでは利用できません")
+
+        if args.prompt is not None:
+            # 単一のプロンプトを処理
+            print("\n--- Generated Text ---")
+            output_text, token_num, generation_time = generate_onnx(
+                model,
+                tokenizer,
+                args.prompt,
+                args.max_tokens,
+                temperature=args.temperature,
+                top_k=args.top_k,
+                show_streaming=not args.no_streaming,
+            )
+            if args.no_streaming:
+                print(output_text)
+            print("--- End ---")
+            print(f"Time: {generation_time:.2f} seconds")
+            print(f"Token num: {token_num}")
+            print(f"Time per token: {generation_time / token_num:.2f} seconds")
+        else:
+            # インタラクティブモード
+            interactive_mode(model, tokenizer, args.max_tokens, None, args.temperature, args.top_k, use_onnx=True)
     else:
-        # 最新のチェックポイントを使用
-        model_dir = Path(config.path.log_dir)
-        try:
-            checkpoint_path = latest_checkpoint_path(model_dir, "checkpoint_*.pth")
-        except (IndexError, FileNotFoundError):
-            print(f"Error: チェックポイントが見つかりません: {model_dir}")
-            print("--checkpoint オプションでチェックポイントファイルを指定してください。")
-            return
+        # PyTorchモデルを使用する場合
+        device = torch.device(args.device)
+        print(f"Using device: {device}")
 
-    print(f"Loading checkpoint: {checkpoint_path}")
+        # チェックポイントのパスを決定
+        if args.checkpoint is not None:
+            checkpoint_path = args.checkpoint
+        else:
+            # 最新のチェックポイントを使用
+            model_dir = Path(config.path.log_dir)
+            try:
+                checkpoint_path = latest_checkpoint_path(model_dir, "checkpoint_*.pth")
+            except (IndexError, FileNotFoundError):
+                print(f"Error: チェックポイントが見つかりません: {model_dir}")
+                print("--checkpoint オプションでチェックポイントファイルを指定してください。")
+                return
 
-    # モデルのロード
-    model, tokenizer = load_model(config, checkpoint_path, device, enable_internal_cache=args.enable_internal_cache)
+        print(f"Loading checkpoint: {checkpoint_path}")
 
-    if args.prompt is not None:
-        # 単一のプロンプトを処理
-        print("\n--- Generated Text ---")
-        output_text, token_num, generation_time = generate(
-            model,
-            tokenizer,
-            args.prompt,
-            args.max_tokens,
-            device,
-            temperature=args.temperature,
-            top_k=args.top_k,
-            show_streaming=not args.no_streaming,
-        )
-        if args.no_streaming:
-            print(output_text)
-        print("--- End ---")
-        print(f"Time: {generation_time:.2f} seconds")
-        print(f"Token num: {token_num}")
-        print(f"Time per token: {generation_time / token_num:.2f} seconds")
-    else:
-        # インタラクティブモード
-        interactive_mode(model, tokenizer, args.max_tokens, device, args.temperature, args.top_k)
+        # モデルのロード
+        model, tokenizer = load_model(config, checkpoint_path, device, enable_internal_cache=args.enable_internal_cache)
+
+        if args.prompt is not None:
+            # 単一のプロンプトを処理
+            print("\n--- Generated Text ---")
+            output_text, token_num, generation_time = generate(
+                model,
+                tokenizer,
+                args.prompt,
+                args.max_tokens,
+                device,
+                temperature=args.temperature,
+                top_k=args.top_k,
+                show_streaming=not args.no_streaming,
+            )
+            if args.no_streaming:
+                print(output_text)
+            print("--- End ---")
+            print(f"Time: {generation_time:.2f} seconds")
+            print(f"Token num: {token_num}")
+            print(f"Time per token: {generation_time / token_num:.2f} seconds")
+        else:
+            # インタラクティブモード
+            interactive_mode(model, tokenizer, args.max_tokens, device, args.temperature, args.top_k)
 
 
 if __name__ == "__main__":
