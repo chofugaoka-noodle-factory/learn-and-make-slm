@@ -241,7 +241,9 @@ class GPT2Decoder(DecoderBase):
         y: Float[Tensor, "B S V"] = self.linear_out(x)
 
         # present_keysとpresent_valuesをstackして単一のtensorにする
-        present_keys_tensor: Float[Tensor, "L B H S_present D_k"] | None = torch.stack(present_keys, dim=0) if use_external_cache and len(present_keys) > 0 else None
+        present_keys_tensor: Float[Tensor, "L B H S_present D_k"] | None = (
+            torch.stack(present_keys, dim=0) if use_external_cache and len(present_keys) > 0 else None
+        )
         present_values_tensor: Float[Tensor, "L B H S_present D_k"] | None = (
             torch.stack(present_values, dim=0) if use_external_cache and len(present_values) > 0 else None
         )
