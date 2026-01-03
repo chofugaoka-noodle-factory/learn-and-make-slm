@@ -54,11 +54,13 @@ uv run infer_torch.py <config_file> --prompt "Hello," --enable-cache
 
 ```bash
 # モデルをONNX形式でエクスポート (外挿KVキャッシュ有効化)
-uv run onnx_export.py <config_file> <checkpoint_path> <onnx_model_path> --enable-kv-cache
+uv run onnx_export.py <config_file> <checkpoint_path> --output <onnx_model_path> --enable-kv-cache
+# CUDA EPを利用したい場合はdeviceを指定(古いopset version 17でexportされる)
+uv run onnx_export.py <config_file> <checkpoint_path> --output <onnx_oldop_model_path> --enable-kv-cache --device cuda
 # インタラクティブモードで起動
 uv run infer_onnx.py <config_file> <onnx_model_path>
-# CUDAを利用したい場合はdeviceを指定
-uv run infer_onnx.py <config_file> <onnx_model_path> --device cuda
+# CUDA EPを利用したい場合はoldopset modelとdeviceを指定
+uv run infer_onnx.py <config_file> <onnx_oldop_model_path> --device cuda
 # temperature及びtop-kを指定して推論(temp=1.0, top-k=10)
 uv run infer_onnx.py <config_file> <onnx_model_path> --temperature 1.0 --top-k 10
 # プロンプトを指定して推論(インタラクティブモードではない)
