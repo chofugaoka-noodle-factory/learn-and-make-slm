@@ -104,6 +104,9 @@ class ScaledDotProductAttentionFunction(torch.autograd.Function):
             torch.ones((s_q, s_k), device=scores.device, dtype=torch.bool),
             diagonal=start,
         )
+        # past keyが存在する場合、最初のシーケンスをマスクする
+        if torch.onnx.is_in_onnx_export() and present_key is not None:
+            causal_mask[:, 0] = 0
         scores = scores.masked_fill(~causal_mask, float("-inf"))
 
         if seq_lens is not None:
@@ -338,9 +341,16 @@ class ScaledDotProductAttention(nn.Module):
         Float[Tensor, "B H_G2 S_present D"] | None,
     ]:
         if torch.onnx.is_in_onnx_export():
-            output, present_key, present_value = ScaledDotProductAttentionFunction.apply(
-                Q, K, V, int(K.size(-3)), int(Q.size(-3)), self.scale.item(), past_key, past_value, seq_lens
-            )
+            if Q.device.type != "cuda":
+                output, present_key, present_value = ScaledDotProductAttentionFunction.apply(
+                    Q, K, V, int(K.size(-3)), int(Q.size(-3)), self.scale.item(), past_key, past_value, seq_lens
+                )
+            else:
+                # CUDA EP向けにexportする場合はAttention Opのないversion 17でexportされるのでforwardをトレースさせる
+                output, present_key, present_value = ScaledDotProductAttentionFunction.forward(
+                    None, Q, K, V, int(K.size(-3)), int(Q.size(-3)), self.scale.item(), past_key, past_value, seq_lens
+                )
+
             return output, present_key, present_value
 
         try:

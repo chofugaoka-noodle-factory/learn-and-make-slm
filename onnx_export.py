@@ -55,9 +55,11 @@ def main():
     parser.add_argument("config", type=Path, default="config/simple_stories.yaml")
     parser.add_argument("--output", type=str, required=True, help="Output ONNX model path")
     parser.add_argument("--enable-kv-cache", action="store_true", help="Enable KV cache for ONNX export")
+    parser.add_argument("--device", type=str, default="cpu", help="Device to use for ONNX export")
     args = parser.parse_args()
 
-    device = "cpu"
+    device = torch.device(args.device)
+    print(f"Using device: {device}")
 
     config = SLMConfig.load(args.config)
 
@@ -76,7 +78,7 @@ def main():
         print("Exporting model with KV cache support...")
 
         # ダミー入力を作成（pre-fill用）
-        dummy_input = torch.randint(0, tokenizer.n_vocab, (1, 10))
+        dummy_input = torch.randint(0, tokenizer.n_vocab, (1, 10)).to(device)
 
         n_layers = len(model.layers)
         print(f"Model has {n_layers} layers")
@@ -99,8 +101,8 @@ def main():
         print(f"Output names: {output_names}")
 
         # ダミーのKVキャッシュを作成
-        dummy_past_keys = torch.zeros((n_layers, 1, 4, 10, 64))
-        dummy_past_values = torch.zeros((n_layers, 1, 4, 10, 64))
+        dummy_past_keys = torch.zeros((n_layers, 1, 4, 10, 64)).to(device)
+        dummy_past_values = torch.zeros((n_layers, 1, 4, 10, 64)).to(device)
 
         torch.onnx.export(
             model,
@@ -109,7 +111,8 @@ def main():
             input_names=input_names,
             output_names=output_names,
             dynamic_axes=dynamic_axes,
-            opset_version=23,
+            # CUDA EPはSqueezeのopset version 23に対応していないため、version 17まで下げる
+            opset_version=23 if args.device != "cuda" else 17,
             dynamo=False,
             optimize=False,
             external_data=False,
@@ -120,7 +123,7 @@ def main():
 
         torch.onnx.export(
             model,
-            (torch.randint(0, tokenizer.n_vocab, (1, 10)),),  # 入力テンソル
+            (torch.randint(0, tokenizer.n_vocab, (1, 10)).to(device),),  # 入力テンソル
             args.output,
             input_names=["input"],
             output_names=["output"],
@@ -129,7 +132,8 @@ def main():
                 "input": {0: "batch_size", 1: "sequence_length"},
                 "output": {0: "batch_size", 1: "sequence_length"},
             },
-            opset_version=23,  # ONNXのバージョン、Attentionが有効なバージョンを指定
+            # CUDA EPはSqueezeのopset version 23に対応していないため、version 17まで下げる
+            opset_version=23 if args.device != "cuda" else 17,
             dynamo=False,  # dynamoを使うとsymbolicを無視して演算が分解されるので、最適化が意味をなさなくなる
             optimize=False,  # 最適化を無効化する(dynamo=Falseなので意味はない)
             external_data=False,  # 重みを同じモデルに統合する

@@ -281,7 +281,11 @@ class RotaryPositionalEmbedding(nn.Module):
                 scale_factor=self.scale_factor,
                 interleave=False,
             )
-            result = RotaryPositionalEmbeddingFunction.apply(x, cos, sin, position_ids, x.size(1).item(), self.dim)
+            if x.device.type != "cuda":
+                result = RotaryPositionalEmbeddingFunction.apply(x, cos, sin, position_ids, x.size(1).item(), self.dim)
+            else:
+                # CUDA EP向けにexportする場合はRotaryEmbedding Opのないversion 17でexportされるのでforwardをトレースさせる
+                result = RotaryPositionalEmbeddingFunction.forward(None, x, cos, sin, position_ids, x.size(1), self.dim)
         else:
             result = RotaryPositionalEmbeddingFunction.forward(
                 None, x, self.cos, self.sin, position_ids, x.size(1), self.dim
