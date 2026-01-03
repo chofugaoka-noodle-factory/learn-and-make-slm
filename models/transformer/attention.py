@@ -179,6 +179,17 @@ class ScaledDotProductAttention(nn.Module):
             V = torch.cat((past_value, V), dim=-2)
             present_key, present_value = K, V
 
+        if torch.onnx.is_in_onnx_export() and self.onnx_opset_version >= 23:
+            # Right-align the causal mask for both prefill and cached decoding.
+            query_positions = torch.arange(Q.size(-2), device=Q.device) + K.size(-2) - Q.size(-2)
+            key_positions = torch.arange(K.size(-2), device=Q.device)
+            mask = key_positions <= query_positions.unsqueeze(-1)
+            if seq_lens is not None:
+                mask = mask & (key_positions < seq_lens[:, None, None])
+                mask = mask.unsqueeze(1)
+            output, _, _, _ = torch.onnx.ops.attention(Q, K, V, attn_mask=mask, scale=self.scale)
+            return output, present_key, present_value
+
         # Keep the cache in grouped form; expand only for the actual computation.
         n_groups = Q.size(1) // K.size(1)
         K, V = expand_grouped_kv(K, V, n_groups)
