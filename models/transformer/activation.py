@@ -6,6 +6,8 @@ from models.basic.linear import Linear
 
 
 def sigmoid(x: Float[Tensor, "..."]) -> Float[Tensor, "..."]:
+    if torch.onnx.is_in_onnx_export():
+        return torch.onnx.ops.symbolic("::Sigmoid", (x,), dtype=x.dtype, shape=x.shape, version=13)
     return 1 / (1 + (-x).exp())
 
 
@@ -45,7 +47,7 @@ class GLU(torch.nn.Module):
         super().__init__()
         self.proj = Linear(dim_in, dim_hidden * 2)
 
-    def forward(self, x: Float[Tensor, "... D"]) -> Float[Tensor, "... D"]:
+    def forward(self, x: Float[Tensor, "... D_in"]) -> Float[Tensor, "... D_out"]:
         w, v = self.proj(x).chunk(2, dim=-1)
         return w * sigmoid(v)
 
@@ -60,6 +62,6 @@ class SwiGLU(torch.nn.Module):
         self.proj = Linear(dim_in, dim_hidden * 2)
         self._swish = Swish()
 
-    def forward(self, x: Float[Tensor, "... D"]) -> Float[Tensor, "... D"]:
+    def forward(self, x: Float[Tensor, "... D_in"]) -> Float[Tensor, "... D_out"]:
         w, v = self.proj(x).chunk(2, dim=-1)
         return w * self._swish(v)
