@@ -19,7 +19,7 @@ from utils.checkpoint import latest_checkpoint_path, load_checkpoint
 
 
 def load_model(
-    config: SLMConfig, checkpoint_path: str, device: torch.device, enable_cache: bool = False
+    config: SLMConfig, checkpoint_path: str, device: torch.device, enable_internal_cache: bool = False
 ) -> tuple[GPT2Decoder, tiktoken.Encoding]:
     """モデルとトークナイザーをロードする"""
     tokenizer = tiktoken.get_encoding(config.tokenizer)
@@ -32,7 +32,7 @@ def load_model(
                 config.model.d_model,
                 config.model.n_heads,
                 tokenizer.eot_token,
-                enable_cache=enable_cache,
+                enable_internal_cache=enable_internal_cache,
             )
         case "gpt-oss":
             assert config.model.n_groups is not None, "n_groups must be provided for GPT-OSS"
@@ -43,7 +43,7 @@ def load_model(
                 config.model.n_heads,
                 config.model.n_groups,
                 tokenizer.eot_token,
-                enable_cache=enable_cache,
+                enable_internal_cache=enable_internal_cache,
             )
         case _:
             raise ValueError(f"Model type {config.model.model_type} not supported")
@@ -191,7 +191,7 @@ def main() -> None:
         help="使用するデバイス。指定しない場合は自動で選択",
     )
     parser.add_argument(
-        "--enable-cache",
+        "--enable-internal-cache",
         action="store_true",
         help="KVキャッシュを有効にする",
     )
@@ -213,7 +213,7 @@ def main() -> None:
             return
 
     print(f"Loading checkpoint: {checkpoint_path}")
-    model, tokenizer = load_model(config, checkpoint_path, device, enable_cache=args.enable_cache)
+    model, tokenizer = load_model(config, checkpoint_path, device, enable_internal_cache=args.enable_internal_cache)
 
     if args.prompt is not None:
         print("\n--- Generated Text ---")
