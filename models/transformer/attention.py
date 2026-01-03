@@ -29,7 +29,7 @@ class ScaledDotProductAttention(nn.Module):
         super().__init__()
         self.d_k = d_k
         self.softmax = Softmax()
-        self.scale = 1.0 / torch.sqrt(torch.tensor(d_k, dtype=torch.float32))
+        self.scale = d_k**-0.5
         self.onnx_opset_version = 23
 
     def xformers_forward(
@@ -166,7 +166,7 @@ class ScaledDotProductAttention(nn.Module):
             if seq_lens is not None:
                 mask = mask & (key_positions < seq_lens[:, None, None])
                 mask = mask.unsqueeze(1)
-            output, _, _, _ = torch.onnx.ops.attention(Q, K, V, attn_mask=mask, scale=self.scale.item())
+            output, _, _, _ = torch.onnx.ops.attention(Q, K, V, attn_mask=mask, scale=self.scale)
             return output
 
         try:
