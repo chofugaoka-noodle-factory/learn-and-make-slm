@@ -12,7 +12,7 @@ def test_gpt_2_decoder_layer_shape():
     x = torch.rand(batch_size, seq_len, d_model)
 
     decoder_layer = GPT2DecoderLayer(d_model=d_model, n_heads=n_heads)
-    output = decoder_layer(x, seq_lens=torch.tensor([seq_len, seq_len]))
+    output, _, _ = decoder_layer(x, seq_lens=torch.tensor([seq_len, seq_len]))
 
     assert output.shape == (batch_size, seq_len, d_model)
 
@@ -28,6 +28,6 @@ def test_gpt_oss_decoder_layer_shape():
     x = torch.rand(batch_size, seq_len, d_model)
 
     decoder_layer = GPTOSSDecoderLayer(d_model=d_model, n_heads=n_heads, n_groups=n_groups)
-    output = decoder_layer(x, seq_lens=torch.tensor([seq_len, seq_len]))
+    output, _, _ = decoder_layer(x, seq_lens=torch.tensor([seq_len, seq_len]))
 
     assert output.shape == (batch_size, seq_len, d_model)
