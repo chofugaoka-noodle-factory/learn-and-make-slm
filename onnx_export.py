@@ -10,6 +10,7 @@ from config import SLMConfig
 from models.transformer.decoder import DecoderBase, GPT2Decoder, GPTOSSDecoder
 from utils.checkpoint import latest_checkpoint_path, load_checkpoint
 
+
 def get_model(
     config: SLMConfig, enable_internal_cache: bool = False
 ) -> tuple[GPT2Decoder | GPTOSSDecoder, tiktoken.Encoding]:

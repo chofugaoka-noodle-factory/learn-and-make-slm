@@ -85,7 +85,7 @@ def test_gpt_2_decoder_output_consistency_with_kv_cache():
     # 段階的に各トークンを処理
     output_list = []
     for i in range(seq_len):
-        output = decoder_with_cache(x[:, i: i + 1])
+        output = decoder_with_cache(x[:, i : i + 1])
         output_list.append(output)
 
     output_with_cache_last = torch.cat(output_list, dim=1)
@@ -142,7 +142,7 @@ def test_gpt_oss_decoder_output_consistency_with_kv_cache():
     # 段階的に各トークンを処理
     output_list = []
     for i in range(seq_len):
-        output = decoder_with_cache(x[:, i: i + 1])
+        output = decoder_with_cache(x[:, i : i + 1])
         output_list.append(output)
 
     output_with_cache_last = torch.cat(output_list, dim=1)
