@@ -4,7 +4,6 @@ PyTorch推論スクリプト: 学習済みチェックポイントを使用し�
 
 import warnings
 
-warnings.simplefilter("ignore")
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -14,48 +13,16 @@ import tiktoken
 import torch
 
 from config import SLMConfig
-from models.transformer.decoder import GPT2Decoder, GPTOSSDecoder
-from utils.checkpoint import latest_checkpoint_path, load_checkpoint
+from models.transformer.decoder import DecoderBase
+from utils.checkpoint import latest_checkpoint_path
+from utils.model import get_model_with_checkpoint
 
 
-def load_model(
-    config: SLMConfig, checkpoint_path: str, device: torch.device, enable_internal_cache: bool = False
-) -> tuple[GPT2Decoder, tiktoken.Encoding]:
-    """モデルとトークナイザーをロードする"""
-    tokenizer = tiktoken.get_encoding(config.tokenizer)
-
-    match config.model.model_type:
-        case "gpt-2":
-            model = GPT2Decoder(
-                tokenizer.n_vocab,
-                config.model.n_layers,
-                config.model.d_model,
-                config.model.n_heads,
-                tokenizer.eot_token,
-                enable_internal_cache=enable_internal_cache,
-            )
-        case "gpt-oss":
-            assert config.model.n_groups is not None, "n_groups must be provided for GPT-OSS"
-            model = GPTOSSDecoder(
-                tokenizer.n_vocab,
-                config.model.n_layers,
-                config.model.d_model,
-                config.model.n_heads,
-                config.model.n_groups,
-                tokenizer.eot_token,
-                enable_internal_cache=enable_internal_cache,
-            )
-        case _:
-            raise ValueError(f"Model type {config.model.model_type} not supported")
-
-    load_checkpoint(checkpoint_path, model, printf=print)
-    model.to(device)
-    model.eval()
-    return model, tokenizer
+warnings.simplefilter("ignore")
 
 
 def generate(
-    model: GPT2Decoder,
+    model: DecoderBase,
     tokenizer: tiktoken.Encoding,
     prompt: str,
     max_tokens: int,
@@ -86,7 +53,7 @@ def generate(
 
 
 def interactive_mode(
-    model: GPT2Decoder,
+    model: DecoderBase,
     tokenizer: tiktoken.Encoding,
     max_tokens: int,
     device: torch.device,
@@ -192,6 +159,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--enable-internal-cache",
+        "--enable-cache",
         action="store_true",
         help="KVキャッシュを有効にする",
     )
@@ -212,8 +180,12 @@ def main() -> None:
             print("--checkpoint オプションでチェックポイントファイルを指定してください。")
             return
 
+    if checkpoint_path is None:
+        parser.error("No checkpoint found; specify --checkpoint or check path.log_dir")
     print(f"Loading checkpoint: {checkpoint_path}")
-    model, tokenizer = load_model(config, checkpoint_path, device, enable_internal_cache=args.enable_internal_cache)
+    model, tokenizer = get_model_with_checkpoint(
+        config, checkpoint_path, device, enable_internal_cache=args.enable_internal_cache
+    )
 
     if args.prompt is not None:
         print("\n--- Generated Text ---")
