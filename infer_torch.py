@@ -15,43 +15,8 @@ import torch
 
 from config import SLMConfig
 from models.transformer.decoder import GPT2Decoder, GPTOSSDecoder
-from utils.checkpoint import latest_checkpoint_path, load_checkpoint
-
-
-def load_model(
-    config: SLMConfig, checkpoint_path: str, device: torch.device, enable_internal_cache: bool = False
-) -> tuple[GPT2Decoder, tiktoken.Encoding]:
-    """モデルとトークナイザーをロードする"""
-    tokenizer = tiktoken.get_encoding(config.tokenizer)
-
-    match config.model.model_type:
-        case "gpt-2":
-            model = GPT2Decoder(
-                tokenizer.n_vocab,
-                config.model.n_layers,
-                config.model.d_model,
-                config.model.n_heads,
-                tokenizer.eot_token,
-                enable_internal_cache=enable_internal_cache,
-            )
-        case "gpt-oss":
-            assert config.model.n_groups is not None, "n_groups must be provided for GPT-OSS"
-            model = GPTOSSDecoder(
-                tokenizer.n_vocab,
-                config.model.n_layers,
-                config.model.d_model,
-                config.model.n_heads,
-                config.model.n_groups,
-                tokenizer.eot_token,
-                enable_internal_cache=enable_internal_cache,
-            )
-        case _:
-            raise ValueError(f"Model type {config.model.model_type} not supported")
-
-    load_checkpoint(checkpoint_path, model, printf=print)
-    model.to(device)
-    model.eval()
-    return model, tokenizer
+from utils.checkpoint import latest_checkpoint_path
+from utils.model import get_model_with_checkpoint
 
 
 def generate(
@@ -213,7 +178,7 @@ def main() -> None:
             return
 
     print(f"Loading checkpoint: {checkpoint_path}")
-    model, tokenizer = load_model(config, checkpoint_path, device, enable_internal_cache=args.enable_internal_cache)
+    model, tokenizer = get_model_with_checkpoint(config, checkpoint_path, device, enable_internal_cache=args.enable_internal_cache)
 
     if args.prompt is not None:
         print("\n--- Generated Text ---")
