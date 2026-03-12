@@ -41,11 +41,11 @@ def validate(
     with torch.no_grad():
         for _batch in tqdm(test_loader, desc="Validation", dynamic_ncols=True, position=2):
             batch: SimpleStoriesBatchTorch = to_device(_batch, next(model.parameters()).device)
-            seq_lengths = batch["lengths"] - 1
+            seq_lens = batch["lengths"] - 1
 
             with torch.amp.autocast("cuda", enabled=False):
-                output = model(batch["tokens_ids"][:, :-1], seq_lengths)
-                loss = model.loss(output, batch["tokens_ids"][:, 1:], seq_lengths)
+                output, _, _ = model.forward(batch["tokens_ids"][:, :-1], seq_lens=seq_lens)
+                loss = model.loss(output, batch["tokens_ids"][:, 1:], seq_lens)
             all_loss += loss.item()
 
             if epoch is not None and count < 5:
@@ -134,9 +134,10 @@ def train(
 
                 # === 1. 順伝播 (Forward Pass) ===
                 # モデルに入力を与えて、lossを計算する
+                seq_lens = batch["lengths"] - 1
                 with torch.amp.autocast("cuda", enabled=use_amp):
-                    output = model(batch["tokens_ids"][:, :-1], batch["lengths"] - 1)
-                    loss = model.loss(output, batch["tokens_ids"][:, 1:], batch["lengths"] - 1)
+                    output, _, _ = model(batch["tokens_ids"][:, :-1], seq_lens=seq_lens)
+                    loss = model.loss(output, batch["tokens_ids"][:, 1:], seq_lens)
 
                 # === 2. 逆伝播 (Backward Pass) ===
                 # loss.backward()で勾配を計算し、param.gradに加算

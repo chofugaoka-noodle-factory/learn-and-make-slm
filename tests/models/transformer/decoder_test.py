@@ -16,7 +16,7 @@ def test_gpt_2_decoder_shape():
     x = torch.randint(0, n_vocab, (batch_size, seq_len))
 
     decoder = GPT2Decoder(n_vocab=n_vocab, n_layers=n_layers, d_model=d_model, n_heads=n_heads, end_token_id=end_token_id)
-    output = decoder(x, seq_lens=torch.tensor([seq_len, seq_len]))
+    output, _, _ = decoder(x, seq_lens=torch.tensor([seq_len, seq_len]))
 
     assert output.shape == (batch_size, seq_len, n_vocab)
 
@@ -37,7 +37,7 @@ def test_gpt_oss_decoder_shape():
     decoder = GPTOSSDecoder(
         n_vocab=n_vocab, n_layers=n_layers, d_model=d_model, n_heads=n_heads, n_groups=n_groups, end_token_id=end_token_id
     )
-    output = decoder(x, seq_lens=torch.tensor([seq_len, seq_len]))
+    output, _, _ = decoder(x, seq_lens=torch.tensor([seq_len, seq_len]))
 
     assert output.shape == (batch_size, seq_len, n_vocab)
 
@@ -65,7 +65,7 @@ def test_gpt_2_decoder_output_consistency_with_kv_cache():
         end_token_id=end_token_id,
         enable_internal_cache=False,
     )
-    output_no_cache = decoder_no_cache(x, seq_lens=seq_lens)
+    output_no_cache, *_ = decoder_no_cache(x, seq_lens=seq_lens)
 
     # KVキャッシュ有りで段階的に処理
     decoder_with_cache = GPT2Decoder(
@@ -85,7 +85,7 @@ def test_gpt_2_decoder_output_consistency_with_kv_cache():
     # 段階的に各トークンを処理
     output_list = []
     for i in range(seq_len):
-        output = decoder_with_cache(x[:, i: i + 1])
+        output, *_ = decoder_with_cache(x[:, i: i + 1])
         output_list.append(output)
 
     output_with_cache_last = torch.cat(output_list, dim=1)
@@ -121,7 +121,7 @@ def test_gpt_oss_decoder_output_consistency_with_kv_cache():
         end_token_id=end_token_id,
         enable_internal_cache=False,
     )
-    output_no_cache = decoder_no_cache(x, seq_lens=seq_lens)
+    output_no_cache, *_ = decoder_no_cache(x, seq_lens=seq_lens)
 
     # KVキャッシュ有りで段階的に処理
     decoder_with_cache = GPTOSSDecoder(
@@ -142,7 +142,7 @@ def test_gpt_oss_decoder_output_consistency_with_kv_cache():
     # 段階的に各トークンを処理
     output_list = []
     for i in range(seq_len):
-        output = decoder_with_cache(x[:, i: i + 1])
+        output, *_ = decoder_with_cache(x[:, i: i + 1])
         output_list.append(output)
 
     output_with_cache_last = torch.cat(output_list, dim=1)
