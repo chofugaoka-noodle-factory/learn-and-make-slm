@@ -6,6 +6,9 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 import time
+import warnings
+
+warnings.simplefilter("ignore")
 
 import tiktoken
 import torch
