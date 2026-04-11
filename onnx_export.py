@@ -70,6 +70,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--enable-kv-cache", action="store_true")
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
+    parser.add_argument("--opset-version", type=int, choices=[18, 23], help="省略時はCPU: 23、CUDA: 18")
     args = parser.parse_args()
 
     config = SLMConfig.load(args.config)
@@ -78,7 +79,7 @@ def main() -> None:
         parser.error("No checkpoint found; specify --checkpoint or check path.log_dir")
     device = torch.device(args.device)
     model, _ = get_model_with_checkpoint(config, str(checkpoint_path), device)
-    opset_version = 18 if device.type == "cuda" else 23
+    opset_version = args.opset_version or (18 if device.type == "cuda" else 23)
     export_model(model, args.output, opset_version, args.enable_kv_cache)
     print(f"ONNX model exported to {args.output}")
 
