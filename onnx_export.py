@@ -67,8 +67,8 @@ def main():
         print(f"Output names: {output_names}")
 
         # ダミーのKVキャッシュを作成
-        dummy_past_keys = torch.zeros((n_layers, 1, n_groups, 10, d_model // n_heads)).to(device)
-        dummy_past_values = torch.zeros((n_layers, 1, n_groups, 10, d_model // n_heads)).to(device)
+        dummy_past_keys = torch.zeros((n_layers, 1, n_heads // n_groups, 10, d_model // n_heads)).to(device)
+        dummy_past_values = torch.zeros((n_layers, 1, n_heads // n_groups, 10, d_model // n_heads)).to(device)
 
         torch.onnx.export(
             model,
