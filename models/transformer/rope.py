@@ -1,3 +1,4 @@
+import os
 from jaxtyping import Float, Int
 from torch import Tensor, nn
 import torch
@@ -281,11 +282,11 @@ class RotaryPositionalEmbedding(nn.Module):
                 scale_factor=self.scale_factor,
                 interleave=False,
             )
-            if x.device.type != "cuda":
-                result = RotaryPositionalEmbeddingFunction.apply(x, cos, sin, position_ids, x.size(1).item(), self.dim)
-            else:
+            if os.environ.get("ONNX_ROPE_DECOMPOSE", "0") == "1":
                 # CUDA EP向けにexportする場合はRotaryEmbedding Opのないversion 17でexportされるのでforwardをトレースさせる
                 result = RotaryPositionalEmbeddingFunction.forward(None, x, cos, sin, position_ids, x.size(1), self.dim)
+            else:
+                result = RotaryPositionalEmbeddingFunction.apply(x, cos, sin, position_ids, x.size(1).item(), self.dim)
         else:
             result = RotaryPositionalEmbeddingFunction.forward(
                 None, x, self.cos, self.sin, position_ids, x.size(1), self.dim

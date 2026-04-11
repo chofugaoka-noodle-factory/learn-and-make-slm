@@ -1,3 +1,4 @@
+import os
 from typing import Final
 import warnings
 from torch import nn, Tensor
@@ -341,14 +342,14 @@ class ScaledDotProductAttention(nn.Module):
         Float[Tensor, "B H_G2 S_present D"] | None,
     ]:
         if torch.onnx.is_in_onnx_export():
-            if Q.device.type != "cuda":
-                output, present_key, present_value = ScaledDotProductAttentionFunction.apply(
-                    Q, K, V, int(K.size(-3)), int(Q.size(-3)), self.scale.item(), past_key, past_value, seq_lens
-                )
-            else:
+            if os.environ.get("ONNX_ATTENTION_DECOMPOSE", "0") == "1":
                 # CUDA EP向けにexportする場合はAttention Opのないversion 17でexportされるのでforwardをトレースさせる
                 output, present_key, present_value = ScaledDotProductAttentionFunction.forward(
                     None, Q, K, V, int(K.size(-3)), int(Q.size(-3)), self.scale.item(), past_key, past_value, seq_lens
+                )
+            else:
+                output, present_key, present_value = ScaledDotProductAttentionFunction.apply(
+                    Q, K, V, int(K.size(-3)), int(Q.size(-3)), self.scale.item(), past_key, past_value, seq_lens
                 )
 
             return output, present_key, present_value

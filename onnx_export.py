@@ -6,48 +6,8 @@ import tiktoken
 from config import SLMConfig
 from models.transformer.decoder import GPT2Decoder, GPTOSSDecoder
 from utils.checkpoint import latest_checkpoint_path, load_checkpoint
+from utils.model import get_model_with_checkpoint
 
-
-def load_model(
-    config: SLMConfig, checkpoint_path: str, device: torch.device, enable_cache: bool = False
-) -> tuple[GPT2Decoder, tiktoken.Encoding]:
-    """モデルとトークナイザーをロードする"""
-    # トークナイザーの初期化
-    tokenizer = tiktoken.get_encoding(config.tokenizer)
-
-    # モデルの初期化
-    match config.model.model_type:
-        case "gpt-2":
-            model = GPT2Decoder(
-                tokenizer.n_vocab,
-                config.model.n_layers,
-                config.model.d_model,
-                config.model.n_heads,
-                tokenizer.eot_token,
-                enable_cache=enable_cache,
-            )
-        case "gpt-oss":
-            assert config.model.n_groups is not None, "n_groups must be provided for GPT-OSS"
-            model = GPTOSSDecoder(
-                tokenizer.n_vocab,
-                config.model.n_layers,
-                config.model.d_model,
-                config.model.n_heads,
-                config.model.n_groups,
-                tokenizer.eot_token,
-                enable_cache=enable_cache,
-            )
-        case _:
-            raise ValueError(f"Model type {config.model.model_type} not supported")
-
-    # チェックポイントからモデルをロード
-    load_checkpoint(checkpoint_path, model, printf=print)
-
-    # モデルをデバイスに転送し、推論モードに設定
-    model.to(device)
-    model.eval()
-
-    return model, tokenizer
 
 
 def main():
@@ -71,7 +31,7 @@ def main():
         print("--checkpoint オプションでチェックポイントファイルを指定してください。")
         return
 
-    model, tokenizer = load_model(config, checkpoint_path, device)
+    model, tokenizer = get_model_with_checkpoint(config, checkpoint_path, device)
 
     if args.enable_kv_cache:
         # KV Cacheをサポートしたモデルのラッパーを作成
@@ -81,6 +41,12 @@ def main():
         dummy_input = torch.randint(0, tokenizer.n_vocab, (1, 10)).to(device)
 
         n_layers = len(model.layers)
+        if hasattr(model.layers[0].self_attn, "n_groups"):
+            n_groups = model.layers[0].self_attn.n_groups
+        else:
+            n_groups = 1
+        n_heads = model.layers[0].self_attn.n_heads
+        d_model = model.d_model
         print(f"Model has {n_layers} layers")
 
         # 出力名とdynamic_axesを設定
@@ -101,8 +67,8 @@ def main():
         print(f"Output names: {output_names}")
 
         # ダミーのKVキャッシュを作成
-        dummy_past_keys = torch.zeros((n_layers, 1, 4, 10, 64)).to(device)
-        dummy_past_values = torch.zeros((n_layers, 1, 4, 10, 64)).to(device)
+        dummy_past_keys = torch.zeros((n_layers, 1, n_heads // n_groups, 10, d_model // n_heads)).to(device)
+        dummy_past_values = torch.zeros((n_layers, 1, n_heads // n_groups, 10, d_model // n_heads)).to(device)
 
         torch.onnx.export(
             model,
