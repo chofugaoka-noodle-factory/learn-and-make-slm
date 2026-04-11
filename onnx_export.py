@@ -42,7 +42,7 @@ def export_model(model: DecoderBase, output_path: Path, opset_version: int = 23,
         attention = model.layers[0].self_attn
         cache_heads = attention.n_heads // getattr(attention, "n_groups", 1)
         cache_shape = (len(model.layers), 2, cache_heads, 10, model.d_model // attention.n_heads)
-        past_keys = torch.zeros(cache_shape, device=device)
+        past_keys = torch.zeros(cache_shape, device=device, dtype=next(model.parameters()).dtype)
         past_values = torch.zeros_like(past_keys)
         inputs = (input_ids, past_keys, past_values)
         input_names += ["past_keys", "past_values"]
