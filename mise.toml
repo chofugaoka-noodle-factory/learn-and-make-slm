@@ -16,3 +16,7 @@ description = "Format code with ruff"
 [tasks.test]
 run = "uv run pytest"
 description = "Run tests with pytest"
+
+[tasks.typecheck]
+run = "uv run ty check"
+description = "Type check code with ty"
