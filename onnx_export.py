@@ -4,62 +4,11 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 import torch
-import tiktoken
 
 from config import SLMConfig
-from models.transformer.decoder import DecoderBase, GPT2Decoder, GPTOSSDecoder
-from utils.checkpoint import latest_checkpoint_path, load_checkpoint
-
-
-def get_model(
-    config: SLMConfig, enable_internal_cache: bool = False
-) -> tuple[GPT2Decoder | GPTOSSDecoder, tiktoken.Encoding]:
-    """トークナイザーとモデルを初期化する"""
-
-    # トークナイザーを初期化
-    tokenizer = tiktoken.get_encoding(config.tokenizer)
-
-    # モデルを初期化
-    model: GPT2Decoder | GPTOSSDecoder
-    match config.model.model_type:
-        case "gpt-2":
-            model = GPT2Decoder(
-                tokenizer.n_vocab,
-                config.model.n_layers,
-                config.model.d_model,
-                config.model.n_heads,
-                tokenizer.eot_token,
-                use_sigmoid_gate=config.model.use_sigmoid_gate,
-                enable_internal_cache=enable_internal_cache,
-            )
-        case "gpt-oss":
-            assert config.model.n_groups is not None, "n_groups must be provided for GPT-OSS"
-            model = GPTOSSDecoder(
-                tokenizer.n_vocab,
-                config.model.n_layers,
-                config.model.d_model,
-                config.model.n_heads,
-                config.model.n_groups,
-                tokenizer.eot_token,
-                rope_scale_factor=config.model.rope_scale_factor,
-                use_sigmoid_gate=config.model.use_sigmoid_gate,
-                enable_internal_cache=enable_internal_cache,
-            )
-        case _:
-            raise ValueError(f"Model type {config.model.model_type} not supported")
-
-    return model, tokenizer
-
-
-def get_model_with_checkpoint(
-    config: SLMConfig, checkpoint_path: str, device: torch.device, enable_internal_cache: bool = False
-) -> tuple[GPT2Decoder | GPTOSSDecoder, tiktoken.Encoding]:
-    """トークナイザーとモデルをロードする"""
-    model, tokenizer = get_model(config, enable_internal_cache=enable_internal_cache)
-    load_checkpoint(checkpoint_path, model, printf=print)
-    model.to(device)
-    model.eval()
-    return model, tokenizer
+from models.transformer.decoder import DecoderBase
+from utils.model import get_model_with_checkpoint
+from utils.checkpoint import latest_checkpoint_path
 
 
 class ONNXModel(torch.nn.Module):
@@ -93,7 +42,7 @@ def export_model(model: DecoderBase, output_path: Path, opset_version: int = 23,
         attention = model.layers[0].self_attn
         cache_heads = attention.n_heads // getattr(attention, "n_groups", 1)
         cache_shape = (len(model.layers), 2, cache_heads, 10, model.d_model // attention.n_heads)
-        past_keys = torch.zeros(cache_shape, device=device)
+        past_keys = torch.zeros(cache_shape, device=device, dtype=next(model.parameters()).dtype)
         past_values = torch.zeros_like(past_keys)
         inputs = (input_ids, past_keys, past_values)
         input_names += ["past_keys", "past_values"]
@@ -121,6 +70,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--enable-kv-cache", action="store_true")
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
+    parser.add_argument("--opset-version", type=int, choices=[18, 23], help="省略時はCPU: 23、CUDA: 18")
     args = parser.parse_args()
 
     config = SLMConfig.load(args.config)
@@ -129,7 +79,7 @@ def main() -> None:
         parser.error("No checkpoint found; specify --checkpoint or check path.log_dir")
     device = torch.device(args.device)
     model, _ = get_model_with_checkpoint(config, str(checkpoint_path), device)
-    opset_version = 18 if device.type == "cuda" else 23
+    opset_version = args.opset_version or (18 if device.type == "cuda" else 23)
     export_model(model, args.output, opset_version, args.enable_kv_cache)
     print(f"ONNX model exported to {args.output}")
 

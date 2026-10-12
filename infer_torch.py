@@ -1,69 +1,28 @@
 """
-推論スクリプト: 学習済みモデルを使用してテキスト生成を行う
+PyTorch推論スクリプト: 学習済みチェックポイントを使用してテキスト生成を行う
 """
+
+import warnings
+
 
 from argparse import ArgumentParser
 from pathlib import Path
-
 import time
-import warnings
-
 
 import tiktoken
 import torch
 
 from config import SLMConfig
-from models.transformer.decoder import GPT2Decoder, GPTOSSDecoder
-from utils.checkpoint import latest_checkpoint_path, load_checkpoint
+from models.transformer.decoder import DecoderBase
+from utils.checkpoint import latest_checkpoint_path
+from utils.model import get_model_with_checkpoint
 
 
 warnings.simplefilter("ignore")
 
 
-def load_model(
-    config: SLMConfig, checkpoint_path: str, device: torch.device, enable_internal_cache: bool = False
-) -> tuple[GPT2Decoder, tiktoken.Encoding]:
-    """モデルとトークナイザーをロードする"""
-    # トークナイザーの初期化
-    tokenizer = tiktoken.get_encoding(config.tokenizer)
-
-    # モデルの初期化
-    match config.model.model_type:
-        case "gpt-2":
-            model = GPT2Decoder(
-                tokenizer.n_vocab,
-                config.model.n_layers,
-                config.model.d_model,
-                config.model.n_heads,
-                tokenizer.eot_token,
-                enable_internal_cache=enable_internal_cache,
-            )
-        case "gpt-oss":
-            assert config.model.n_groups is not None, "n_groups must be provided for GPT-OSS"
-            model = GPTOSSDecoder(
-                tokenizer.n_vocab,
-                config.model.n_layers,
-                config.model.d_model,
-                config.model.n_heads,
-                config.model.n_groups,
-                tokenizer.eot_token,
-                enable_internal_cache=enable_internal_cache,
-            )
-        case _:
-            raise ValueError(f"Model type {config.model.model_type} not supported")
-
-    # チェックポイントからモデルをロード
-    load_checkpoint(checkpoint_path, model, printf=print)
-
-    # モデルをデバイスに転送し、推論モードに設定
-    model.to(device)
-    model.eval()
-
-    return model, tokenizer
-
-
 def generate(
-    model: GPT2Decoder,
+    model: DecoderBase,
     tokenizer: tiktoken.Encoding,
     prompt: str,
     max_tokens: int,
@@ -73,48 +32,34 @@ def generate(
     show_streaming: bool = True,
 ) -> tuple[str, int, float]:
     """プロンプトからテキストを生成する"""
-    # プロンプトをトークンIDに変換
     input_ids = tokenizer.encode(prompt)
     input_tensor = torch.tensor([input_ids], dtype=torch.long, device=device)
 
-    # 推論の実行
     with torch.no_grad():
         with torch.amp.autocast("cuda", enabled=torch.cuda.is_available()):
-            if show_streaming:
-                start_time = time.time()
-                output_ids = model.infer(
-                    starts=input_tensor,
-                    max_token_count=max_tokens,
-                    temperature=temperature,
-                    top_k=top_k,
-                    tokenizer=tokenizer,
-                )
-                end_time = time.time()
-                print()  # 改行を追加
-            else:
-                start_time = time.time()
-                output_ids = model.infer(
-                    starts=input_tensor,
-                    max_token_count=max_tokens,
-                    temperature=temperature,
-                    top_k=top_k,
-                    tokenizer=None,
-                )
-                end_time = time.time()
+            start_time = time.time()
+            output_ids = model.infer(
+                starts=input_tensor,
+                max_token_count=max_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                tokenizer=tokenizer if show_streaming else None,
+            )
+            end_time = time.time()
             token_num = output_ids.size(1) - input_tensor.size(1)
-    # 生成されたトークンIDをテキストに変換
+
     output_text = tokenizer.decode(output_ids[0].tolist())
     return output_text, token_num, end_time - start_time
 
 
 def interactive_mode(
-    model: GPT2Decoder,
+    model: DecoderBase,
     tokenizer: tiktoken.Encoding,
     max_tokens: int,
     device: torch.device,
     temperature: float = 0.0,
     top_k: int | None = None,
-):
+) -> None:
     """インタラクティブモードでテキスト生成を行う"""
     print("\n=== Interactive Mode ===")
     print("プロンプトを入力してください。終了するには 'quit' または 'exit' と入力してください。")
@@ -125,7 +70,7 @@ def interactive_mode(
     while True:
         try:
             print("\nPrompt: ", end="")
-            lines = []
+            lines: list[str] = []
             while True:
                 line = input()
                 if line.endswith("\\"):
@@ -145,12 +90,20 @@ def interactive_mode(
 
             print("\n--- Generated Text ---")
             _, token_num, generation_time = generate(
-                model, tokenizer, prompt, max_tokens, device, temperature, top_k, show_streaming=True
+                model,
+                tokenizer,
+                prompt,
+                max_tokens,
+                device,
+                temperature=temperature,
+                top_k=top_k,
+                show_streaming=True,
             )
-            print("--- End ---")
+            print("\n--- End ---")
             print(f"Time: {generation_time:.2f} seconds")
             print(f"Token num: {token_num}")
-            print(f"Time per token: {generation_time / token_num:.2f} seconds")
+            if generation_time > 0:
+                print(f"Token per time: {token_num / generation_time:.2f} tok/s")
 
         except KeyboardInterrupt:
             print("\n\n終了します。")
@@ -160,8 +113,8 @@ def interactive_mode(
             break
 
 
-def main():
-    parser = ArgumentParser(description="学習済みモデルを使用してテキスト生成を行う")
+def main() -> None:
+    parser = ArgumentParser(description="学習済みPyTorchモデルを使用してテキスト生成を行う")
     parser.add_argument("config", type=Path, help="設定ファイル（YAML）のパス")
     parser.add_argument(
         "--checkpoint",
@@ -206,24 +159,19 @@ def main():
     )
     parser.add_argument(
         "--enable-internal-cache",
+        "--enable-cache",
         action="store_true",
         help="KVキャッシュを有効にする",
     )
     args = parser.parse_args()
 
-    # 設定の読み込み
     config = SLMConfig.load(args.config)
-
-    # デバイスの設定
-    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     device = torch.device(args.device)
     print(f"Using device: {device}")
 
-    # チェックポイントのパスを決定
     if args.checkpoint is not None:
         checkpoint_path = args.checkpoint
     else:
-        # 最新のチェックポイントを使用
         model_dir = Path(config.path.log_dir)
         try:
             checkpoint_path = latest_checkpoint_path(model_dir, "checkpoint_*.pth")
@@ -232,13 +180,14 @@ def main():
             print("--checkpoint オプションでチェックポイントファイルを指定してください。")
             return
 
+    if checkpoint_path is None:
+        parser.error("No checkpoint found; specify --checkpoint or check path.log_dir")
     print(f"Loading checkpoint: {checkpoint_path}")
-
-    # モデルのロード
-    model, tokenizer = load_model(config, checkpoint_path, device, enable_internal_cache=args.enable_internal_cache)
+    model, tokenizer = get_model_with_checkpoint(
+        config, checkpoint_path, device, enable_internal_cache=args.enable_internal_cache
+    )
 
     if args.prompt is not None:
-        # 単一のプロンプトを処理
         print("\n--- Generated Text ---")
         output_text, token_num, generation_time = generate(
             model,
@@ -255,9 +204,9 @@ def main():
         print("--- End ---")
         print(f"Time: {generation_time:.2f} seconds")
         print(f"Token num: {token_num}")
-        print(f"Time per token: {generation_time / token_num:.2f} seconds")
+        if generation_time > 0:
+            print(f"Token per time: {token_num / generation_time:.2f} tok/s")
     else:
-        # インタラクティブモード
         interactive_mode(model, tokenizer, args.max_tokens, device, args.temperature, args.top_k)
 
 
