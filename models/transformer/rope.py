@@ -33,6 +33,7 @@ class RotaryPositionalEmbedding(nn.Module):
             raise ValueError("RotaryPositionalEmbedding expects an even dimension.")
 
         self.dim = dim
+        self.onnx_opset_version = 23
         self.max_seq_len = max_seq_len
         self.original_max_seq_len = max_seq_len
         self.scale_factor = scale_factor
@@ -178,6 +179,45 @@ class RotaryPositionalEmbedding(nn.Module):
         """
         seq_len = x.size(-2)
         total_seq_len = seq_len + positional_offset
+
+        if torch.onnx.is_in_onnx_export():
+            if self.enable_dynamic_scaling:
+                raise ValueError("ONNX export requires a fixed RoPE scale_factor")
+            # Compute rotations in the graph; do not mutate the eager-mode cache.
+            cos, sin = self._compute_rotates(
+                max_seq_len=total_seq_len,
+                dim=self.dim,
+                device=x.device,
+                dtype=x.dtype,
+                scale_factor=self.scale_factor,
+            )
+            if self.onnx_opset_version < 23:
+                cos = cos[positional_offset:total_seq_len]
+                sin = sin[positional_offset:total_seq_len]
+                return x * cos + rotate_half(x) * sin
+
+            # The ONNX operator expects [batch, heads, sequence, dim].
+            original_ndim = x.ndim
+            if original_ndim == 2:
+                x = x.unsqueeze(0).unsqueeze(0)
+            elif original_ndim == 3:
+                x = x.unsqueeze(1)
+            position_ids = torch.arange(positional_offset, total_seq_len, device=x.device)
+            position_ids = position_ids.unsqueeze(0).expand(x.size(0), -1)
+            output = torch.onnx.ops.rotary_embedding(
+                x,
+                cos[:, ::2],
+                sin[:, ::2],
+                position_ids,
+                interleaved=True,
+                num_heads=x.size(1),
+                rotary_embedding_dim=self.dim,
+            )
+            if original_ndim == 2:
+                return output.squeeze(0).squeeze(0)
+            if original_ndim == 3:
+                return output.squeeze(1)
+            return output
 
         # Dynamic scaling: adjust scale_factor based on current sequence length
         if self.enable_dynamic_scaling:

@@ -8,7 +8,6 @@ from pathlib import Path
 import time
 import warnings
 
-warnings.simplefilter("ignore")
 
 import tiktoken
 import torch
@@ -16,6 +15,9 @@ import torch
 from config import SLMConfig
 from models.transformer.decoder import GPT2Decoder, GPTOSSDecoder
 from utils.checkpoint import latest_checkpoint_path, load_checkpoint
+
+
+warnings.simplefilter("ignore")
 
 
 def load_model(

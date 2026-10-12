@@ -29,7 +29,8 @@ class ScaledDotProductAttention(nn.Module):
         super().__init__()
         self.d_k = d_k
         self.softmax = Softmax()
-        self.scale = 1.0 / torch.sqrt(torch.tensor(d_k, dtype=torch.float32))
+        self.scale = d_k**-0.5
+        self.onnx_opset_version = 23
 
     def xformers_forward(
         self,
@@ -155,6 +156,19 @@ class ScaledDotProductAttention(nn.Module):
         V: Float[Tensor, "B H S_k D"],
         seq_lens: Int[Tensor, "B"] | None = None,  # noqa: F821
     ) -> Float[Tensor, "B H S_q D"]:
+        if torch.onnx.is_in_onnx_export():
+            if self.onnx_opset_version < 23:
+                return self.reference_forward(Q, K, V, seq_lens)
+            # Right-align the causal mask so internal-cache decoding also works.
+            query_positions = torch.arange(Q.size(-2), device=Q.device) + K.size(-2) - Q.size(-2)
+            key_positions = torch.arange(K.size(-2), device=Q.device)
+            mask = key_positions <= query_positions.unsqueeze(-1)
+            if seq_lens is not None:
+                mask = mask & (key_positions < seq_lens[:, None, None])
+                mask = mask.unsqueeze(1)
+            output, _, _, _ = torch.onnx.ops.attention(Q, K, V, attn_mask=mask, scale=self.scale)
+            return output
+
         try:
             return self.xformers_forward(Q, K, V, seq_lens)
         except Exception:
